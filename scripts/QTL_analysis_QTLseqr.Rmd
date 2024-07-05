@@ -1,0 +1,218 @@
+---
+title: "QTL mapping and analysis with QTLseqR"
+output: html_notebook
+---
+
+This notebook aims at analysing csv file containing vcf information (PL, DP, AD) for a F2 population phenotyped and grouped into two bulks : high and low. This follows the Bulk Segregant Analysis (BSA) technique along with whole genome sequencing and QTL-mapping and analysis.
+
+# Preparing data
+
+## Load the packages
+
+```{r}
+library(QTLseqr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+## Get data files
+
+```{r}
+HighBulk <- "MIL2-KAD1_L"
+LowBulk <- "MIL2-KAD1_E"
+setwd("/Users/gaellebustarret/Projects/Stage_3A/QTL_analysis/Data/VCF_files/variant_calling/")
+table_file <- "MIL2-KAD1_ParentCalling_DP_OnlyPolymorphic_NoIndel.table"
+csv_file <- "MIL2-KAD1_ParentCalling_DP_OnlyPolymorphic_NoIndel.csv"
+
+## Choose which chromosomes will be included in the analysis (i.e. exclude smaller contigs)
+Chroms <- paste0(rep("", 5), 1:5)
+
+## Import SNP data from file
+df <- importFromGATK(
+  file = table_file,
+  highBulk = HighBulk,
+  lowBulk = LowBulk,
+  chromList = Chroms
+)
+```
+
+# Filtering
+
+## Filter SNPs based on some criteria
+
+```{r}
+df_filt <- filterSNPs(
+  SNPset = df,
+  refAlleleFreq = 0.20,
+  minTotalDepth = 100,
+  maxTotalDepth = 400,
+  minSampleDepth = 40,
+  minGQ = 99
+)
+```
+# Analysis
+
+The analysis can be done following two factors. You can either do a G' prime analysis which focuses on the significance of the difference of allele frequencies between the two bulks or a QTLseq analysis to analyse the origin of the alleles from the two bulks. The specific info about both techniques can be found in the manual for QTLseqR.
+
+## Run G' analysis
+
+```{r}
+df_filt <- runGprimeAnalysis(SNPset = df_filt, 
+                             windowSize = 1e6,
+                             outlierFilter = "deltaSNP")
+```
+
+## Run QTLseq analysis
+
+```{r}
+df_filt <- runQTLseqAnalysis( 
+      SNPset = df_filt, 
+      windowSize = 1e6, 
+      popStruc = "F2",
+      bulkSize = 250, 
+      replications = 10000, 
+      intervals = c(95, 99)
+)
+```
+
+# Plots
+
+## SNP-index
+
+The SNP-index is the allele frequency of the alternate allele compared to total (alternate + reference). 0 = 100% reference allele, 1 = 100% alternate allele, 0.5=50% of each.
+
+### Convert data to long format for ggplot2
+
+```{r}
+df_long <- df_filt %>%
+  pivot_longer(cols = starts_with("SNPindex"), 
+               names_to = "phenotype", 
+               values_to = "SNP_index") %>%
+  mutate(phenotype = ifelse(phenotype == "SNPindex.HIGH", "Late", "Early")) %>%
+  mutate(POS_Mb = POS / 1000000)
+```
+                             
+### Create the plot
+
+```{r}
+p <- ggplot(df_long, aes(x = POS_Mb, y = SNP_index, color = phenotype)) +
+  geom_smooth(method = "auto") +
+  facet_wrap(~ CHROM, scales = "free_x", nrow = 1) +
+  scale_color_manual(values = c("Late" = "skyblue", "Early" = "orange")) +
+  labs(x = "Position (Mb)", y = "SNP Index", color = "phenotype") +
+  theme(legend.position = c(.9, .85))
+```
+
+### Add marker positions to the plot
+
+```{r}
+markers <- data.frame(
+  CHROM = c("4", "4", "4", "4", "4", "4", "5", "5", "5", "5", "5"),
+  POS_Mb = c(0.2702020, 1.1259825, 1.2412465, 5.7254595, 9.0143655, 9.1975435, 3.1764150, 4.2262690, 5.1716235, 5.3453005, 5.8284525),
+  name = c("FRI", "LD", "GA1", "CRY1", "ESD4", "PHYD", "FLC", "MAF1", "CO", "FRL1", "TFL2"),
+  line_number = 1:11
+)
+```
+
+```{r}
+p + 
+  geom_vline(data = markers, aes(xintercept = POS_Mb, linetype = as.factor(line_number)), color = "black") +
+  geom_label(data = markers, aes(x = POS_Mb, y = max(df_long$SNP_index), vjust = c(0, 1.1, 2.2, 0, 0, 1.1, 0, 1.1, 2.2, 3.3, 4.4), label = line_number),
+             label.padding = unit(0.1, "lines"), size = 2.5, 
+             fill = "white", color = "black") +
+  scale_linetype_manual(values = rep("dashed", 11), labels = paste(1:11, markers$name, sep = ": "), name = "Markers") +
+  guides(linetype = guide_legend(override.aes = list(color = "black"))) +
+  facet_wrap(~ CHROM, scales = "free_x", nrow = 1) +
+  theme(legend.position = "right")
+```
+
+### Extract data
+
+```{r}
+# Build the plot to extract the data
+
+plot_data <- ggplot_build(p)
+```
+
+```{r}
+# Extract the smoothed data
+
+smooth_data <- plot_data$data[[1]]
+```
+
+```{r}
+# Specify the x value and chromosome you are interested in
+
+x_value <- 8.3573750 # replace with your specific x value
+chromosome <- "5" # replace with your specific chromosome value
+```
+
+```{r}
+# Filter the smoothed data for the specific x value and chromosome
+
+smoothed_values <- smooth_data %>%
+  filter(PANEL == chromosome) %>%
+  group_by(group) %>%
+  filter(abs(x - x_value) == min(abs(x - x_value))) %>%
+  ungroup()
+```
+
+```{r}
+# Display the smoothed values
+
+print(smoothed_values)
+```
+
+## DeltaSNP
+
+This gives the difference of SNP-indexes between the two bulks (high-low).
+
+```{r}
+plotQTLStats(
+  SNPset = df_filt,
+  var = "deltaSNP", 
+  plotIntervals = TRUE)
+```
+
+## Gprime
+
+This gives the significance of each QTL, linked with the effect of the locus.
+
+```{r}
+plotQTLStats(
+  SNPset = df_filt,
+  var = "Gprime", 
+  plotThreshold = TRUE, 
+  q = 0.01
+) 
+```
+
+## p-value
+
+Another scale but same conclusions.
+
+```{r}
+plotQTLStats(
+  SNPset = df_filt,
+  var = "negLog10Pval", 
+  plotThreshold = TRUE, 
+  q = 0.01
+)
+```
+
+# Export summary CSV
+
+This gives the exact locations of the QTLs for further studies.
+
+```{r}
+setwd("/Users/gaellebustarret/Projects/Stage_3A/QTL_analysis/Data/QTL_F2/")
+
+getQTLTable(
+  SNPset = df_filt,
+  alpha = 0.01,
+  export = TRUE,
+  fileName = "MIL2-KAD1_ParentCalling_F2_QTLs.csv"
+)
+```
+
